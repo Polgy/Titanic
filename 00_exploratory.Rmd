@@ -1,0 +1,207 @@
+Titanic Predictive Model Exploratory
+========================================================
+
+
+```{r readData}
+#setwd("C:/Users/e151205/src/mutils/cEra/UW-DatSci/Titanic")
+tr <- read.csv("C:/Users/Sergey/Downloads/datasets/Titanic/train.csv")
+attach(tr)
+
+```
+
+```{r loadLibs, dependson="readData"}
+library(data.table)
+library(Hmisc)
+td <- data.table(tr)
+```
+
+```{r exploratory}
+library(ggplot2)
+hist(Parch)
+hist(SibSp)
+hist(Age)
+hist(Survived)
+hist(Pclass)
+hist(Fare)
+hist(log10(Fare))
+#log_Fare
+
+mean(td[, .N, by=Ticket]$N)
+
+# group ticket
+#134 tickets
+
+#344 passengers on group ticket
+
+
+#f_status
+hist(td[Name %like% "Mrs", Age])
+hist(td[Name %like% "Miss", Age])
+hist(td[Name %like% "Mr. ", Age], breaks=40)
+hist(td[Name %like% "Master", Age])
+
+
+```
+
+```{r process}
+#log_Fare
+td[, fareLog := log10(Fare)]
+td[fareLog<0, fareLog:=0]
+
+#group Ticket
+tg = td[, list(gSize = .N), by=Ticket]
+setkey(tg, Ticket)
+setkey(td, Ticket)
+td = td[tg]
+td[gSize>1]
+#344 passanges as a part of family. Nearly half.
+
+td$Pclass = as.factor(td$Pclass)
+td[,SurvFactor := factor(ifelse(Survived==1, "yes", "no"))]
+
+#f_status
+td[Name %like% "Mr\\. ", fStatus:="Mr."]
+td[Name %like% "Mrs", fStatus:="Mrs"]
+td[Name %like% "Miss", fStatus:="Miss"]
+td[Name %like% "Master", fStatus:="Master"]
+td[Name %like% "Rev", fStatus:="Rev"]
+
+td[is.na(fStatus) & Sex == "male", fStatus := "Mr."]
+td[is.na(fStatus) & Sex == "female", fStatus := "Miss"]
+
+td[,fStatus := as.factor(fStatus)]
+table(td$fStatus)
+with(td, xtabs( ~ fStatus + Sex))
+
+td[,AgeNA:=FALSE]
+td[is.na(Age),AgeNA:=TRUE]
+
+td[,tmpImpute := paste(gSize, fStatus)]
+setkey(td,tmpImpute)
+tmpAge=td[!is.na(Age), list(iAge=mean(Age)), by=tmpImpute]
+setkey(tmpAge, tmpImpute)
+td=td[tmpAge]
+td[is.na(Age), Age := iAge]
+
+
+#td[, fSize :=SibSp + Parch]
+td[, ageCat:= cut(Age, breaks=c(0, 13, 18, 50, 100))]
+td[,tAge:=cut2(Age, m=60)]
+```
+
+```{r pModel}
+fit0=glm(Survived ~ ageCat +Sex, data=td)
+
+
+#(P=sum(Survived)/.N), by = list(fStatus,Pclass)], plot(P ~ fStatus * Pclass))
+
+
+# 177 missing age categories
+#majority of cases do not have siblings spouses or parents
+byAge = td[, list( pctSurv = sum(Survived)/.N), by = ageCat]
+
+
+tAgeSex <- td[,list(Pct=sum(Survived)/.N), by=list(Sex, Pclass, tAge)]
+```
+
+```{r plot, fig.height=10, fig.width=12}
+
+library(ggplot2)
+p_age_sex_cat <- 
+   ggplot(data = td, aes(x=Age, y=Survived, color=Sex)) +
+         geom_point(alpha=.2, position = position_jitter(h=.1, w=1)) +
+         geom_smooth() +
+         facet_grid(Pclass ~ .)
+print(p_age_sex_cat)
+
+
+fit0=glm(Survived ~ ageCat + Sex*Pclass, data=td)
+fit1=glm(Survived ~ ageCat*Sex*Pclass, data=td)
+fit2 = glm(Survived ~ ageCat*Sex*Pclass + fareLog, data=td)
+fit3 = glm(Survived ~ ageCat*Sex*Pclass + gSize*Pclass, data=td)
+fit4 = glm(Survived ~ Sex + Pclass + fStatus + ageCat + AgeNA + gSize + Parch, data=td)
+
+```
+
+```{r gbm}
+library(caret)
+library(gbm)
+
+gbmGrid = expand.grid(.interaction.depth = 1:7, 
+                      .n.trees = c(25,50,100,200), 
+                      .shrinkage = c(.01,.05,.1,.2) )
+
+fitControl <- 
+  trainControl(
+    method = "repeatedcv",
+    repeats = 9 #,
+    #classProbs = TRUE,
+    #summaryFunction = twoClassSummary
+)
+
+fitControl = trainControl(method = "cv", number = 10 )
+
+fit_gbm <- train(Survived ~ Sex + Pclass + fStatus + ageCat + AgeNA + gSize + Parch,
+                    td,
+                    #distribution = "bernoulli", gaussian
+                    #distribution = "bernoulli",
+                    method = "gbm",
+                    tuneGrid= gbmGrid,
+                    trControl = fitControl,
+                    verbose = FALSE)
+
+plot(fit_gbm)
+summary(fit_gbm)
+
+
+```
+
+
+```{r test}
+tt <- fread("C:/Users/Sergey/Downloads/datasets/Titanic/test.csv")
+#log_Fare
+tt[, fareLog := log10(Fare)]
+tt[fareLog<0, fareLog:=0]
+
+#group Ticket
+tg = tt[, list(gSize = .N), by=Ticket]
+setkey(tg, Ticket)
+setkey(tt, Ticket)
+tt = tt[tg]
+tt[gSize>1]
+#97 passanges as a part of group. 1/4.
+
+tt$Pclass = as.factor(tt$Pclass)
+#tt[,SurvFactor := factor(ifelse(Survived==1, "yes", "no"))]
+
+#f_status
+tt[Name %like% "Mr\\. ", fStatus:="Mr."]
+tt[Name %like% "Mrs", fStatus:="Mrs"]
+tt[Name %like% "Miss", fStatus:="Miss"]
+tt[Name %like% "Master", fStatus:="Master"]
+tt[Name %like% "Rev", fStatus:="Rev"]
+tt[,fStatus := as.factor(fStatus)]
+table(tt$fStatus)
+with(tt, xtabs( ~ fStatus + Sex))
+
+tt[is.na(fStatus) & Sex == "male", fStatus := "Mr."]
+tt[is.na(fStatus) & Sex == "female", fStatus := "Miss"]
+tt[,AgeNA:=FALSE]
+tt[is.na(Age),AgeNA:=TRUE]
+
+tt[,tmpImpute := paste(gSize, fStatus)]
+setkey(tt,tmpImpute)
+#tmpAge=td[!is.na(Age), list(iAge=mean(Age)), by=tmpImpute]
+#setkey(tmpAge, tmpImpute)
+tt=merge(tt, tmpAge, all.x = T, all.y = F)
+tt[is.na(Age), Age := iAge]
+sum(is.na(tt$Age))
+
+#td[, fSize :=SibSp + Parch]
+tt[, ageCat:= cut(Age, breaks=c(0, 13, 18, 50, 100))]
+
+TEST = ifelse(predict(fit_gbm, newdata=tt) > .5, 1, 0)
+
+tt[,Survived := TEST]
+write.csv(tt[,list(PassengerId, Survived)][order(PassengerId)], file="C:/Users/Sergey/Downloads/datasets/Titanic/submit.csv")
+```
